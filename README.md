@@ -1,63 +1,81 @@
-# C++ Level 2 Order Book TCP Client-Server Example
+# C++ Level 2 Order Book — Single-Writer Matching Engine with Multi-Producer I/O
 
-This project demonstrates a high-performance Level 2 order book using a TCP socket-based client-server architecture in C++. It is suitable for quant developer resume projects.
+This project implements a Level 2 order book with a single-writer matching engine fed by multiple producer threads (self-test workers and per-client connection threads). It demonstrates an actor-style design suitable for systems/interview discussions and performance-oriented C++ on Windows.
 
 ## Features
-- **Level 2 Order Book**: Price-level aggregation with buy/sell side management
-- **Multithreaded Processing**: 4 concurrent threads for order processing
-- **Performance Metrics**: Self-test with throughput and latency measurements
-- **Real-time Order Matching**: Marketable order matching with price-time priority
-- **TCP Socket Communication**: Client-server architecture for order entry and execution reporting
+- **Level 2 Order Book**: Price-level aggregation on buy (descending) and sell (ascending) sides
+- **Single-Writer Matching Engine**: One dedicated thread owns and mutates the book (no global lock contention)
+- **Multi-Producer Ingress**: Self-test workers and each TCP client connection enqueue orders concurrently
+- **Throughput Benchmark**: Built-in self-test generates 100,000 orders and reports throughput
+- **TCP Server**: Accepts multiple client connections (thread-per-connection) on `127.0.0.1:54000`
+
 
 ## Performance
-- **Throughput**: 789,000+ orders/sec
-- **Latency**: 0.83 microseconds average fill latency
-- **Test**: 100,000 orders processed in 0.13 seconds using 4 threads
+- The self-test generates 100,000 random orders across multiple producer threads and enqueues them.
+- The single-writer engine thread drains the queue and updates the book.
+- The server prints overall throughput (orders/sec) for your machine.
 
-## Structure
-- `server/` — C++ server that maintains the Level 2 order book and handles client connections
-- `client/` — C++ client that sends orders (buy/sell) to the server
-
-## Build Instructions (Windows, g++)
-
-### Prerequisites
-- [MinGW-w64](https://www.mingw-w64.org/) or similar g++ compiler for Windows
-- Command Prompt or PowerShell
-
-### Build Server
 ```
-g++ -std=c++17 -o server.exe server/main.cpp -lws2_32
+Processed 100000 orders in 0.0330099 seconds
+Throughput: 3.02939e+06 orders/sec
+Top of Book:
+Best Bid: 99.3486 x 96
+Best Ask: 99.3922 x 12
 ```
 
-### Build Client
+## Why this design
+- **Correctness**: Only one thread updates the book → no data races, no complex locking
+- **Performance**: I/O and parsing scale across cores; the engine thread keeps the book hot in cache
+- **Burst Handling**: A thread-safe queue decouples producers from the consumer, smoothing spikes
+
+## Project Structure
+- `server/` — matching engine, TCP listener, self-test
+- `client/` — simple TCP client that sends one order
+
+## Build (Windows, g++)
+
+Prerequisites: MinGW-w64 (or other g++ with WinSock2), PowerShell or CMD.
+
+- Build server
 ```
-g++ -std=c++17 -o client.exe client/main.cpp -lws2_32
+g++ -O2 -std=c++17 server/main.cpp -lws2_32 -o server.exe
 ```
+
+- Build client
+```
+g++ -O2 -std=c++17 client/main.cpp -lws2_32 -o client.exe
+```
+
+(Optional) MSVC `cl` builds are also supported with equivalent flags.
 
 ## Run
-1. Start the server in one terminal:
-   ```
-   ./server.exe
-   ```
-   The server will run a self-test first, then start listening for connections.
-
-2. In another terminal, run the client:
-   ```
-   ./client.exe
-   ```
+1. Start the server (it runs a self-test, then listens):
+```
+./server.exe
+```
+2. In other terminals, run one or more clients:
+```
+./client.exe
+```
+You can run multiple clients concurrently; each connection is handled by its own producer thread.
 
 ## Protocol
-- The client sends a single line: `side price quantity` (e.g., `buy 100.5 10`)
-- The server responds with an acknowledgment or error message
-- Server logs client connections and order processing in real-time
+- Each message: `side price quantity`
+  - Examples: `buy 100.5 10`, `sell 99.8 25`
+- The server replies with `Order received` or `Invalid order format`.
+- The server’s per-connection thread reads in a loop, so you can send multiple messages on one connection.
+
+
+Note: We focus on throughput; average-latency instrumentation was removed to simplify the critical path.
 
 ## Technical Details
-- **Order Book**: Uses `std::map` for price-level aggregation (buy side descending, sell side ascending)
-- **Threading**: 4 threads with mutex-protected order book access
-- **Matching**: Simple price-time priority matching for marketable orders
-- **Networking**: Winsock2 for Windows TCP socket implementation
+- **Order book**: `std::map<double,int,greater<double>>` for bids; `std::map<double,int>` for asks
+- **Engine**: One thread loops on a `std::condition_variable`, pops from a `std::deque<Order>`, and applies updates
+- **Ingress**:
+  - Self-test workers: generate and enqueue orders
+  - TCP accept loop: thread-per-connection, parse and enqueue orders continuously
+- **Threading model**: Many producers → one consumer (actor model)
+- **Networking**: WinSock2 on Windows
 
 ## Notes
-- This is a demonstration project for educational and resume purposes
-- The server includes a built-in self-test for performance benchmarking
-- For production, consider persistent storage, more robust error handling, and additional order types 
+- Educational/demo project; extend with persistence, richer order types, error handling, snapshots, and sharding for production use. 
